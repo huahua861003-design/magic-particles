@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>iPhone 互動粒子系統</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+        #container { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
+        #video-input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+        
+        .overlay {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.8); color: white; display: flex; flex-direction: column;
+            align-items: center; justify-content: center; z-index: 100; text-align: center; padding: 20px;
+        }
+        button {
+            padding: 15px 30px; font-size: 18px; cursor: pointer; background: #00ffcc;
+            border: none; border-radius: 30px; color: #000; font-weight: bold; margin-top: 20px;
+        }
+        #status { font-size: 14px; color: #aaa; margin-top: 10px; }
+    </style>
+</head>
+<body>
+
+<div id="loading-screen" class="overlay">
+    <h2>3D 粒子手勢交互</h2>
+    <p>請確保在光線充足處，並伸出雙手控制</p>
+    <button id="start-btn">開啟相機與系統</button>
+    <div id="status">等待啟動...</div>
+</div>
+
+<video id="video-input" playsinline muted></video>
+<div id="container"></div>
+
+<script type="importmap">
+    {
+        "imports": {
+            "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+            "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/",
+            "tweakpane": "https://cdn.jsdelivr.net/npm/tweakpane@3.1.9/dist/tweakpane.min.js"
+        }
+    }
+</script>
+
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+
+<script type="module">
+    import * as THREE from 'three';
+    import { Pane } from 'tweakpane';
+
+    let scene, camera, renderer, particles, material;
+    const PARTICLE_COUNT = 3000; // 手機版減少粒子量確保順暢
+    const params = { template: 'heart', color: '#00ffcc', expansion: 1 };
+
+    // --- 粒子形狀生成 ---
+    function getShapePoints(name) {
+        const points = [];
+        for (let i = 0; i < PARTICLE_COUNT; i++) {
+            let x=0, y=0, z=0;
+            if (name === 'heart') {
+                const t = Math.random() * Math.PI * 2;
+                x = 16 * Math.pow(Math.sin(t), 3);
+                y = 13 * Math.cos(t) - 5 * Math.cos(2*t) - 2 * Math.cos(3*t) - Math.cos(4*t);
+            } else {
+                const theta = Math.random() * Math.PI * 2;
+                const phi = Math.acos(2 * Math.random() - 1);
+                x = 12 * Math.sin(phi) * Math.cos(theta);
+                y = 12 * Math.sin(phi) * Math.sin(theta);
+                z = 12 * Math.cos(phi);
+            }
+            points.push(x * 0.5, y * 0.5, z * 0.5);
+        }
+        return new Float32Array(points);
+    }
+
+    // --- 初始化 Three.js ---
+    function initThree() {
+        scene = new THREE.Scene();
+        camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.z = 30;
+
+        renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        document.getElementById('container').appendChild(renderer.domElement);
+
+        const geometry = new THREE.BufferGeometry();
+        geometry.setAttribute('position', new THREE.BufferAttribute(getShapePoints('heart'), 3));
+
+        material = new THREE.PointsMaterial({
+            color: params.color,
+            size: 0.3,
+            transparent: true,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false
+        });
+
+        particles = new THREE.Points(geometry, material);
+        scene.add(particles);
+
+        const pane = new Pane({ title: '控制面板' });
+        pane.addInput(params, 'color');
+        
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+    }
+
+    // --- MediaPipe 設定 ---
+    const videoElement = document.getElementById('video-input');
+    const startBtn = document.getElementById('start-btn');
+    const statusText = document.getElementById('status');
+
+    const hands = new Hands({
+        locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+    });
+
+    hands.setOptions({
+        maxNumHands: 2,
+        modelComplexity: 0, // 手機務必用 0 以保證效能
+        minDetectionConfidence: 0.5,
+        minTrackingConfidence: 0.5
+    });
+
+    hands.onResults((results) => {
+        if (results.multiHandLandmarks && results.multiHandLandmarks.length >= 2) {
+            const h1 = results.multiHandLandmarks[0][9];
+            const h2 = results.multiHandLandmarks[1][9];
+            const dist = Math.sqrt(Math.pow(h1.x - h2.x, 2) + Math.pow(h1.y - h2.y, 2));
+            params.expansion = THREE.MathUtils.lerp(params.expansion, dist * 6, 0.2);
+        } else {
+            params.expansion = THREE.MathUtils.lerp(params.expansion, 1.0, 0.1);
+        }
+    });
+
+    // --- 啟動按鈕邏輯 ---
+    startBtn.addEventListener('click', async () => {
+        statusText.innerText = "正在請求相機權限...";
+        try {
+            const cameraUtils = new Camera(videoElement, {
+                onFrame: async () => {
+                    await hands.send({image: videoElement});
+                },
+                width: 640, height: 480
+            });
+            
+            await cameraUtils.start();
+            statusText.innerText = "載入模型中...";
+            document.getElementById('loading-screen').style.display = 'none';
+            initThree();
+            animate();
+        } catch (err) {
+            statusText.innerText = "錯誤: " + err.message;
+            alert("請確保使用 Safari 並允許相機存取權限");
+        }
+    });
+
+    function animate() {
+        requestAnimationFrame(animate);
+        particles.rotation.y += 0.01;
+        particles.scale.set(params.expansion, params.expansion, params.expansion);
+        material.color.set(params.color);
+        renderer.render(scene, camera);
+    }
+</script>
+</body>
+</html>
